@@ -1,0 +1,193 @@
+//@version=5
+indicator("v2+++Market Profile", overlay=true, max_lines_count=500)
+
+// ===== Настройки =====
+_1 = input(title='---------Settings for Generating Market Profile---------', defval=true)
+tpoSize = input(title='Declaring TPOsize', defval=55)
+timeFrame = input(title='Specifying the Timeframe for MarketProfile', defval='D')
+_targetArea = input(title='Defining Value Area', defval=70)
+_showSession = input.int(title='Sessions to display', defval=5, minval=1, maxval=20, tooltip='Session number to display.')
+sizing = input.int(title='Adjust Size of Plot', defval=100, tooltip='Reduces/Increase the box size')
+uppercol = input(title='Colors for Value Area High', defval=#f50000)
+downcol = input(title='Colors for Value Area Low', defval=#00c700)
+poccol = input(title='Color of PoC', defval=#00bfff)
+pvacol = input.color(title="Previous Value Area", defval=color.silver)
+cvacol = input.color(title="Current Value Area Color", defval=color.orange)
+showMp = input.bool(defval=true, title="Show Market Profile")
+timezone = input.string("UTC+5", "Timezone Offset", ["UTC-12", "UTC-11", "UTC-10", "UTC-9", "UTC-8", "UTC-7", "UTC-6", "UTC-5", "UTC-4", "UTC-3", "UTC-2", "UTC-1", "UTC+0", "UTC+1", "UTC+2", "UTC+3", "UTC+4", "UTC+5", "UTC+6", "UTC+7", "UTC+8", "UTC+9", "UTC+10", "UTC+11", "UTC+12"])
+
+// Время старта сессии (локальное для выбранного сдвига)
+sessionStartHour = input.int(0, title="Session start hour (by selected timezone)", minval=0, maxval=23)
+sessionStartMinute = input.int(0, title="Session start minute", minval=0, maxval=59)
+
+// ===== Часовой сдвиг =====
+int timezone_offset = switch timezone
+    "UTC-12" => -12
+    "UTC-11" => -11
+    "UTC-10" => -10
+    "UTC-9"  => -9
+    "UTC-8"  => -8
+    "UTC-7"  => -7
+    "UTC-6"  => -6
+    "UTC-5"  => -5
+    "UTC-4"  => -4
+    "UTC-3"  => -3
+    "UTC-2"  => -2
+    "UTC-1"  => -1
+    "UTC+0"  => 0
+    "UTC+1"  => 1
+    "UTC+2"  => 2
+    "UTC+3"  => 3
+    "UTC+4"  => 4
+    "UTC+5"  => 5
+    "UTC+6"  => 6
+    "UTC+7"  => 7
+    "UTC+8"  => 8
+    "UTC+9"  => 9
+    "UTC+10" => 10
+    "UTC+11" => 11
+    "UTC+12" => 12
+
+// ===== Расчёт начала/конца сессии от Гринвича с учётом выбранного сдвига и времени старта =====
+var int session_start_time = na
+var int session_end_time = na
+
+dayMs = 24 * 60 * 60 * 1000
+offsetMs = timezone_offset * 60 * 60 * 1000
+startMinutes = sessionStartHour * 60 + sessionStartMinute
+startMs = startMinutes * 60 * 1000
+
+// Уникальный номер сессии (меняется в момент старта сессии по локальному времени = UTC + offset)
+sessionNumber = math.floor((time + offsetMs - startMs) / dayMs)
+
+// Новый бар сессии
+newSession = ta.change(sessionNumber)
+
+// Точное время старта/окончания текущей сессии в координатах графика (UTC)
+localSessionStart = sessionNumber * dayMs + startMs
+session_start_time := localSessionStart - offsetMs
+session_end_time   := session_start_time + dayMs - 1
+
+// ===== Функции =====
+inrange(_tpo, _high, _low) =>
+    _high >= _tpo and _low <= _tpo
+
+get_index(_array, up, dn) =>
+    upval = array.get(_array, up)
+    dnval = array.get(_array, dn)
+    index = upval > dnval ? up : dn
+    val = math.max(upval, dnval)
+    [index, val]
+
+// ===== Расчёт Market Profile =====
+MarketProfile(res) =>
+    float tfHigh = na
+    float tfLow = na
+    int barNum = na
+    var tpoIndex = array.new_float(tpoSize + 2, 0)
+    var tpoValue = array.new_float(tpoSize + 2, 0)
+
+    tfHigh := newSession ? high : math.max(tfHigh[1], high)
+    tfLow := newSession ? low : math.min(tfLow[1], low)
+    barNum := newSession ? 0 : barNum[1] + 1
+    ranGe = tfHigh - tfLow
+    tpoDiff = ranGe / tpoSize
+
+    float tpoSum = 0
+    for x = 0 to tpoSize
+        _tpovalue = tfLow + x * tpoDiff
+        array.set(tpoValue, x, _tpovalue)
+        float tpoind = 0.0
+        for i = 0 to barNum
+            if inrange(_tpovalue, high[i], low[i])
+                tpoind += 1.0
+        array.set(tpoIndex, x, tpoind)
+        tpoSum += tpoind
+
+    pocLen = array.max(tpoIndex)
+    pocIndex = array.indexof(tpoIndex, pocLen)
+    pocValue = tfLow + pocIndex * tpoDiff
+    int vaHighIndex = pocIndex
+    int vaLowIndex = pocIndex
+    float valueArea = pocLen
+    float targetArea = tpoSum * _targetArea / 100
+
+    for x = 0 to tpoSize
+        if valueArea <= targetArea
+            tup = math.min(tpoSize, vaHighIndex + 1)
+            tdn = math.max(0, vaLowIndex - 1)
+            [index, val] = get_index(tpoIndex, tup, tdn)
+            if index == tdn
+                vaLowIndex := tdn
+                valueArea += val
+            else
+                vaHighIndex := tup
+                valueArea += val
+
+    vaHigh = tfLow + vaHighIndex * tpoDiff
+    vaLow = tfLow + vaLowIndex * tpoDiff
+    [pocValue, vaHigh, vaLow, tpoIndex, tpoValue, tpoDiff]
+
+[pocValue, vaHigh, vaLow, tpoIndex, tpoValue, tpoDiff] = MarketProfile(timeFrame)
+
+var int bartime = na
+bartime := na(bartime) ? time - time[1] : math.min(bartime, time - time[1])
+
+drawLine(val, index) =>
+    _x1 = session_start_time
+    _x2 = _x1 - bartime * int(index) * sizing / 100
+    is_va = val <= vaHigh and val >= vaLow
+    is_poc = math.abs(val - pocValue) <= tpoDiff / 2
+    _col = is_poc ? poccol : is_va ? cvacol : color.silver
+    line.new(_x1, val, _x2, val, xloc=xloc.bar_time, color=color.new(_col, 70), style=line.style_solid, width=8)
+
+setvalues(Line, val, index) =>
+    _x1 = session_start_time
+    _x2 = _x1 - bartime * int(index) * sizing / 100
+    is_va = val <= vaHigh and val >= vaLow
+    is_poc = math.abs(val - pocValue) <= tpoDiff / 2
+    _col = is_poc ? poccol : is_va ? cvacol : color.silver
+    line.set_xy1(Line, _x1, val)
+    line.set_xy2(Line, _x2, val)
+    line.set_color(Line, color.new(_col, 70))
+
+var line[] mpro = array.new_line(tpoSize + 2)
+
+if newSession and showMp
+    for x = 0 to tpoSize
+        array.set(mpro, x, drawLine(array.get(tpoValue, x), array.get(tpoIndex, x)))
+else
+    for x = 0 to tpoSize
+        setvalues(array.get(mpro, x), array.get(tpoValue, x), array.get(tpoIndex, x))
+
+previousDayPOC = ta.valuewhen(newSession, pocValue[1], 0)
+previousDayVaH = ta.valuewhen(newSession, vaHigh[1], 0)
+previousDayVaL = ta.valuewhen(newSession, vaLow[1], 0)
+
+drawLines(x1, x2, value, col, _style, _width) =>
+    line.new(x1, value, x2, value, xloc=xloc.bar_time, color=col, style=_style, width=_width)
+
+drawBox(x1, y1, x2, y2, col, _style, _width, _bgcol, txt, size) =>
+    box.new(x1, y1, x2, y2, border_color=col, border_width=_width, border_style=_style, extend=extend.none, xloc=xloc.bar_time, bgcolor=_bgcol, text=txt, text_size=size)
+
+setvalue(Line, val) =>
+    line.set_y1(Line, val)
+    line.set_y2(Line, val)
+
+var line Poc = na
+var line cPOC = na
+var line cVaH = na
+var line cVaL = na
+var box valuebox = na
+
+if newSession
+    starts = session_start_time
+    end = session_end_time
+    cPOC := drawLines(starts, end, pocValue, poccol, line.style_solid, 2)
+    cVaH := drawLines(starts, end, vaHigh, uppercol, line.style_solid, 2)
+    cVaL := drawLines(starts, end, vaLow, downcol, line.style_solid, 2)
+    valuebox := drawBox(starts, previousDayVaH, end, previousDayVaL, pvacol, line.style_dotted, 1, color.new(pvacol, 90), "VA", size.normal)
+else
+    setvalue(cPOC, pocValue)
+    setvalue(cVaH, vaHigh)
+    setvalue(cVaL, vaLow)
